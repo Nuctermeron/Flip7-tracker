@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -9,7 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { X, RefreshCw, Shuffle, Sparkles, Hand, Layers, Settings } from "lucide-react";
+import { X, RefreshCw, Shuffle, Sparkles, Hand, Layers, Settings, RotateCcw, Save, DownloadCloud, MoonStar, Sun } from "lucide-react";
 
 // --- Utilities ---
 const numberCards = Array.from({ length: 12 }, (_, i) => String(i + 1));
@@ -17,8 +17,8 @@ const specialCards = ["+2", "+4", "+6", "+8", "+10", "x2", "freeze", "flip three
 const allCards = ["0", ...numberCards, ...specialCards];
 
 type CardKey = typeof allCards[number];
-
 type DeckCounts = Record<CardKey, number>;
+type HistoryItem = { type: "played" | "hand"; card: CardKey };
 
 const makeInitialDeck = (): DeckCounts => {
   const base: Partial<DeckCounts> = { "0": 1 };
@@ -34,27 +34,63 @@ const makeInitialDeck = (): DeckCounts => {
 
 const sum = (obj: Record<string, number>) => Object.values(obj).reduce((a, b) => a + b, 0);
 
+const LS_KEY = "flip7-tracker-state-v1";
+
+type PersistedState = {
+  deck: DeckCounts;
+  hand: CardKey[];
+  sortByProb: boolean;
+  history: HistoryItem[];
+  dark: boolean;
+};
+
 // --- Main App ---
 export default function Flip7App() {
   const [deck, setDeck] = useState<DeckCounts>(() => makeInitialDeck());
   const [hand, setHand] = useState<CardKey[]>([]);
   const [sortByProb, setSortByProb] = useState(true);
-  const [history, setHistory] = useState<{ type: "played" | "hand"; card: CardKey }[]>([]);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [dark, setDark] = useState<boolean>(false);
 
+  // --- Load from localStorage once ---
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      if (raw) {
+        const parsed: PersistedState = JSON.parse(raw);
+        if (parsed.deck) setDeck(parsed.deck);
+        if (parsed.hand) setHand(parsed.hand);
+        if (typeof parsed.sortByProb === "boolean") setSortByProb(parsed.sortByProb);
+        if (Array.isArray(parsed.history)) setHistory(parsed.history);
+        if (typeof parsed.dark === "boolean") setDark(parsed.dark);
+      }
+    } catch { /* noop */ }
+  }, []);
+
+  // --- Persist to localStorage ---
+  useEffect(() => {
+    const payload: PersistedState = { deck, hand, sortByProb, history, dark };
+    localStorage.setItem(LS_KEY, JSON.stringify(payload));
+  }, [deck, hand, sortByProb, history, dark]);
+
+  // --- Derived values ---
   const totalInitial = useMemo(() => sum(makeInitialDeck()), []);
   const totalLeft = useMemo(() => sum(deck), [deck]);
   const playedCount = totalInitial - totalLeft;
 
   const stats = useMemo(() => {
-    return allCards.map((c) => ({
+    const rows = allCards.map((c) => ({
       card: c as CardKey,
       left: deck[c as CardKey] || 0,
       prob: totalLeft > 0 ? ((deck[c as CardKey] || 0) / totalLeft) * 100 : 0,
-    })).sort((a, b) => (sortByProb ? b.prob - a.prob : allCards.indexOf(a.card) - allCards.indexOf(b.card)));
+    }));
+    return (sortByProb
+      ? rows.sort((a, b) => b.prob - a.prob)
+      : rows.sort((a, b) => allCards.indexOf(a.card) - allCards.indexOf(b.card))
+    );
   }, [deck, totalLeft, sortByProb]);
 
   const numericStats = useMemo(() => stats.filter(s => numberCards.includes(s.card)), [stats]);
-
   const top5 = useMemo(() => numericStats.slice(0, 5), [numericStats]);
 
   const dangerProb = useMemo(() => {
@@ -65,7 +101,9 @@ export default function Flip7App() {
   }, [hand, numericStats]);
 
   const recommendation = useMemo(() => {
-    return dangerProb > 25 ? { level: "warn" as const, text: "🛑 Lepiej pasuj" } : { level: "ok" as const, text: "✅ Możesz ciągnąć" };
+    return dangerProb > 25
+      ? { level: "warn" as const, text: "Better pass" }
+      : { level: "ok" as const, text: "You can draw" };
   }, [dangerProb]);
 
   // --- Actions ---
@@ -86,8 +124,9 @@ export default function Flip7App() {
 
   const removeFromHand = (idx: number) => {
     const card = hand[idx];
+    if (!card) return;
     setHand((h) => h.filter((_, i) => i !== idx));
-    // do not auto-return to deck to mirror original; provide explicit action below
+    // intentionally NOT returning to deck here
   };
 
   const returnHandToDeck = () => {
@@ -129,39 +168,72 @@ export default function Flip7App() {
     }
   };
 
+  const restoreSession = () => {
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      if (!raw) return;
+      const parsed: PersistedState = JSON.parse(raw);
+      if (parsed.deck) setDeck(parsed.deck);
+      if (parsed.hand) setHand(parsed.hand);
+      if (typeof parsed.sortByProb === "boolean") setSortByProb(parsed.sortByProb);
+      if (Array.isArray(parsed.history)) setHistory(parsed.history);
+      if (typeof parsed.dark === "boolean") setDark(parsed.dark);
+    } catch { /* noop */ }
+  };
+
   // --- UI helpers ---
   const CardPill: React.FC<{ label: string; onPlay?: () => void; onHand?: () => void; left?: number }>
     = ({ label, onPlay, onHand, left }) => (
-    <div className="flex items-center justify-between rounded-2xl border backdrop-blur bg-white/5 dark:bg-black/20 px-3 py-2 gap-2">
+    <div className="flex items-center justify-between rounded-2xl border border-white/10 backdrop-blur bg-white/5 dark:bg-black/20 px-3 py-2 gap-2 transition">
       <div className="flex items-center gap-2">
         <Badge variant="secondary" className="text-sm px-2 py-1 rounded-xl">{label}</Badge>
         <span className="text-xs opacity-70">{left} left</span>
       </div>
       <div className="flex gap-2">
-        <Button size="sm" variant="outline" onClick={onPlay} className="rounded-xl"><Layers className="h-4 w-4 mr-1"/>Zagrana</Button>
-        <Button size="sm" onClick={onHand} className="rounded-xl"><Hand className="h-4 w-4 mr-1"/>Na rękę</Button>
+        <Button size="sm" variant="outline" onClick={onPlay} className="rounded-xl"><Layers className="h-4 w-4 mr-1"/>Played</Button>
+        <Button size="sm" onClick={onHand} className="rounded-xl"><Hand className="h-4 w-4 mr-1"/>To hand</Button>
       </div>
     </div>
   );
 
+  // dark mode class on root
+  useEffect(() => {
+    const el = document.documentElement;
+    if (dark) el.classList.add("dark");
+    else el.classList.remove("dark");
+  }, [dark]);
+
   return (
     <div className="min-h-screen w-full bg-gradient-to-br from-slate-900 via-zinc-900 to-black text-slate-100">
       <div className="mx-auto max-w-7xl px-4 py-6">
-        <header className="flex items-center justify-between mb-6">
-          <h1 className="text-2xl md:text-3xl font-semibold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-indigo-300 via-cyan-300 to-emerald-300">
-            Flip 7 – Tracker i Asystent
-          </h1>
-          <div className="flex gap-2">
-            <Button variant="outline" className="rounded-xl" onClick={undo}><Shuffle className="h-4 w-4 mr-2"/>Cofnij</Button>
-            <Button variant="outline" className="rounded-xl" onClick={resetAll}><RefreshCw className="h-4 w-4 mr-2"/>Reset</Button>
+        <header className="sticky top-0 z-20 -mt-6 -mx-4 px-4 py-3 mb-6 backdrop-blur bg-black/30 border-b border-white/10">
+          <div className="max-w-7xl mx-auto flex items-center justify-between">
+            <h1 className="text-2xl md:text-3xl font-semibold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-indigo-300 via-cyan-300 to-emerald-300">
+              Flip 7 — Tracker & Assistant
+            </h1>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" className="rounded-xl" onClick={undo} aria-label="Undo last action">
+                <Shuffle className="h-4 w-4 mr-2"/>Undo
+              </Button>
+              <Button variant="outline" className="rounded-xl" onClick={restoreSession} aria-label="Restore saved session">
+                <DownloadCloud className="h-4 w-4 mr-2"/>Restore
+              </Button>
+              <Button variant="outline" className="rounded-xl" onClick={resetAll} aria-label="Reset everything">
+                <RefreshCw className="h-4 w-4 mr-2"/>Reset
+              </Button>
+              <Button variant="outline" className="rounded-xl" onClick={() => setDark(v => !v)} aria-label="Toggle dark mode">
+                {dark ? <Sun className="h-4 w-4 mr-2"/> : <MoonStar className="h-4 w-4 mr-2"/>}
+                {dark ? "Light" : "Dark"}
+              </Button>
+            </div>
           </div>
         </header>
 
         <Tabs defaultValue="play" className="space-y-6">
           <TabsList className="grid grid-cols-3 max-w-md rounded-2xl">
-            <TabsTrigger value="play">Gra</TabsTrigger>
-            <TabsTrigger value="stats">Statystyki</TabsTrigger>
-            <TabsTrigger value="settings"><Settings className="h-4 w-4 mr-2"/>Ustawienia</TabsTrigger>
+            <TabsTrigger value="play">Play</TabsTrigger>
+            <TabsTrigger value="stats">Statistics</TabsTrigger>
+            <TabsTrigger value="settings"><Settings className="h-4 w-4 mr-2"/>Settings</TabsTrigger>
           </TabsList>
 
           {/* Play Tab */}
@@ -172,8 +244,10 @@ export default function Flip7App() {
                 <Card className="rounded-3xl border-white/10 bg-white/5">
                   <CardHeader>
                     <CardTitle className="flex items-center justify-between">
-                      <span>Talia i ruchy</span>
-                      <div className="text-sm opacity-80">Pozostało {totalLeft} / {totalInitial} &middot; Zagrane {playedCount}</div>
+                      <span>Deck & Moves</span>
+                      <div className="text-sm opacity-80">
+                        Left {totalLeft} / {totalInitial} &middot; Played {playedCount}
+                      </div>
                     </CardTitle>
                   </CardHeader>
                   <CardContent>
@@ -181,7 +255,13 @@ export default function Flip7App() {
                     <ScrollArea className="h-[420px] pr-2">
                       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-2 gap-3">
                         {allCards.map((c) => (
-                          <CardPill key={c} label={c} left={deck[c as CardKey]} onPlay={() => playCard(c as CardKey)} onHand={() => addToHand(c as CardKey)} />
+                          <CardPill
+                            key={c}
+                            label={c}
+                            left={deck[c as CardKey]}
+                            onPlay={() => playCard(c as CardKey)}
+                            onHand={() => addToHand(c as CardKey)}
+                          />
                         ))}
                       </div>
                     </ScrollArea>
@@ -190,17 +270,17 @@ export default function Flip7App() {
 
                 <Card className="rounded-3xl border-white/10 bg-white/5">
                   <CardHeader>
-                    <CardTitle>Twoja ręka</CardTitle>
+                    <CardTitle>Your Hand</CardTitle>
                   </CardHeader>
                   <CardContent>
                     {hand.length === 0 ? (
-                      <p className="text-sm opacity-70">Brak kart na ręce. Dodaj karty z listy powyżej.</p>
+                      <p className="text-sm opacity-70">No cards in hand. Add cards from the list above.</p>
                     ) : (
                       <div className="flex flex-wrap gap-2">
                         {hand.map((c, i) => (
                           <Badge key={`${c}-${i}`} className="rounded-xl text-sm flex items-center gap-2">
                             {c}
-                            <button aria-label="Usuń" onClick={() => removeFromHand(i)} className="opacity-70 hover:opacity-100">
+                            <button aria-label="Remove from hand" onClick={() => removeFromHand(i)} className="opacity-70 hover:opacity-100">
                               <X className="h-3.5 w-3.5" />
                             </button>
                           </Badge>
@@ -208,8 +288,8 @@ export default function Flip7App() {
                       </div>
                     )}
                     <div className="flex gap-2 mt-4">
-                      <Button variant="outline" className="rounded-xl" onClick={clearHand}>Reset ręki</Button>
-                      <Button className="rounded-xl" onClick={returnHandToDeck}>Oddaj karty do talii</Button>
+                      <Button variant="outline" className="rounded-xl" onClick={clearHand}>Clear hand</Button>
+                      <Button className="rounded-xl" onClick={returnHandToDeck}>Return cards to deck</Button>
                     </div>
                   </CardContent>
                 </Card>
@@ -220,19 +300,21 @@ export default function Flip7App() {
                 <Card className="rounded-3xl border-white/10 bg-gradient-to-br from-white/10 to-white/5">
                   <CardHeader>
                     <CardTitle className="flex items-center justify-between">
-                      <span>Asystent decyzji</span>
+                      <span>Decision Assistant</span>
                       <Dialog>
                         <DialogTrigger asChild>
-                          <Button size="sm" className="rounded-xl"><Sparkles className="h-4 w-4 mr-2"/>Rekomendacja</Button>
+                          <Button size="sm" className="rounded-xl">
+                            <Sparkles className="h-4 w-4 mr-2"/>Recommendation
+                          </Button>
                         </DialogTrigger>
                         <DialogContent className="rounded-3xl">
                           <DialogHeader>
-                            <DialogTitle>Top szanse dociągu</DialogTitle>
-                            <DialogDescription>Kalkulacja na podstawie aktualnej talii.</DialogDescription>
+                            <DialogTitle>Top draw chances</DialogTitle>
+                            <DialogDescription>Calculated from current deck composition.</DialogDescription>
                           </DialogHeader>
                           <div className="space-y-3">
                             {top5.length === 0 ? (
-                              <p className="text-sm opacity-70">Brak dostępnych kart numerycznych w talii.</p>
+                              <p className="text-sm opacity-70">No numeric cards left in the deck.</p>
                             ) : (
                               <ul className="text-sm list-disc pl-5">
                                 {top5.map((s) => (
@@ -241,19 +323,27 @@ export default function Flip7App() {
                               </ul>
                             )}
                             <div className="pt-2 text-sm">
-                              Szansa na drugą identyczną kartę (unikaty w ręce): <strong>{dangerProb.toFixed(2)}%</strong>
+                              Chance to hit a second identical (uniques in hand): <strong>{dangerProb.toFixed(2)}%</strong>
                             </div>
-                            <div className={"text-base font-semibold " + (recommendation.level === "warn" ? "text-red-300" : "text-emerald-300")}>{recommendation.text}</div>
+                            <div
+                              className={
+                                "text-base font-semibold " +
+                                (recommendation.level === "warn" ? "text-red-300" : "text-emerald-300")
+                              }
+                            >
+                              {recommendation.text}
+                            </div>
                           </div>
                         </DialogContent>
                       </Dialog>
                     </CardTitle>
                   </CardHeader>
+
                   <CardContent>
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
                         <Switch id="sort-prob" checked={sortByProb} onCheckedChange={setSortByProb} />
-                        <label htmlFor="sort-prob" className="text-sm select-none">Sortuj wg szansy</label>
+                        <label htmlFor="sort-prob" className="text-sm select-none">Sort by probability</label>
                       </div>
                     </div>
 
@@ -261,17 +351,17 @@ export default function Flip7App() {
                       <Table>
                         <TableHeader>
                           <TableRow>
-                            <TableHead>Karta</TableHead>
-                            <TableHead>Pozostało</TableHead>
-                            <TableHead>Szansa</TableHead>
+                            <TableHead>Card</TableHead>
+                            <TableHead>Left</TableHead>
+                            <TableHead>Chance</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
                           {stats.map((s) => (
                             <TableRow key={s.card}>
                               <TableCell className="font-medium">{s.card}</TableCell>
-                              <TableCell>{s.left}</TableCell>
-                              <TableCell>{s.prob.toFixed(2)}%</TableCell>
+                              <TableCell className="tabular-nums">{s.left}</TableCell>
+                              <TableCell className="tabular-nums">{s.prob.toFixed(2)}%</TableCell>
                             </TableRow>
                           ))}
                         </TableBody>
@@ -287,18 +377,18 @@ export default function Flip7App() {
           <TabsContent value="stats" className="space-y-6">
             <Card className="rounded-3xl border-white/10 bg-white/5">
               <CardHeader>
-                <CardTitle>Przegląd talii</CardTitle>
+                <CardTitle>Deck overview</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
                   {allCards.map((c) => (
                     <div key={c} className="rounded-2xl p-3 border border-white/10 bg-black/20">
                       <div className="text-sm opacity-70">{c}</div>
-                      <div className="text-2xl font-semibold">{deck[c as CardKey]}</div>
+                      <div className="text-2xl font-semibold tabular-nums">{deck[c as CardKey]}</div>
                       <div className="mt-2">
                         <Progress value={(totalLeft > 0 ? (deck[c as CardKey] / totalLeft) * 100 : 0)} className="h-2 rounded-full" />
                       </div>
-                      <div className="mt-2 text-xs opacity-70">{totalLeft > 0 ? ((deck[c as CardKey] / totalLeft) * 100).toFixed(2) : "0.00"}%</div>
+                      <div className="mt-2 text-xs opacity-70 tabular-nums">{totalLeft > 0 ? ((deck[c as CardKey] / totalLeft) * 100).toFixed(2) : "0.00"}%</div>
                     </div>
                   ))}
                 </div>
@@ -310,10 +400,12 @@ export default function Flip7App() {
           <TabsContent value="settings" className="space-y-6">
             <Card className="rounded-3xl border-white/10 bg-white/5">
               <CardHeader>
-                <CardTitle>Niestandardowa talia</CardTitle>
+                <CardTitle>Custom deck</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
-                <p className="text-sm opacity-80">Możesz nadpisać liczebność poszczególnych kart (dla różnych wariantów Flip 7). Wartości ujemne są zablokowane.</p>
+                <p className="text-sm opacity-80">
+                  You can override the number of each card (for different Flip 7 variants). Negative values are blocked.
+                </p>
                 <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
                   {allCards.map((c) => (
                     <div key={c} className="flex items-center gap-2 rounded-2xl border border-white/10 bg-black/20 px-3 py-2">
@@ -327,13 +419,18 @@ export default function Flip7App() {
                           setDeck((d) => ({ ...d, [c]: v } as DeckCounts));
                         }}
                         className="h-8 rounded-xl"
+                        aria-label={`Set count for ${c}`}
                       />
                     </div>
                   ))}
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <Button variant="outline" className="rounded-xl" onClick={() => setDeck(makeInitialDeck())}>Przywróć domyślną talię</Button>
-                  <Button className="rounded-xl" onClick={resetAll}>Pełny reset</Button>
+                  <Button variant="outline" className="rounded-xl" onClick={() => setDeck(makeInitialDeck())}>
+                    <RotateCcw className="h-4 w-4 mr-2" />Restore default deck
+                  </Button>
+                  <Button className="rounded-xl" onClick={resetAll}>
+                    <RefreshCw className="h-4 w-4 mr-2" />Full reset
+                  </Button>
                 </div>
               </CardContent>
             </Card>
@@ -341,7 +438,7 @@ export default function Flip7App() {
         </Tabs>
 
         <footer className="mt-10 text-center text-xs opacity-60">
-          Zrobione z ♥ dla stołu Flip 7. UI: szkło, gradienty i minimalizm – żeby liczyć karty w stylu.
+          Made for Flip 7 game nights. Minimal glass UI so your brain does the math, not your eyes.
         </footer>
       </div>
     </div>
